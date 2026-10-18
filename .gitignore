@@ -1,4 +1,31 @@
+# Rust build output
 /target
+**/*.rs.bk
+*.pdb
+
+# Local Scion data (server store, working-copy state, importer resume state)
 /scion-data
+.scn/
+*.sqlite
 *.sqlite-wal
 *.sqlite-shm
+scion-import-state.json
+
+# Packaging output
+/dist
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*~
+
+# Environment and logs
+.env
+.env.*
+*.log
