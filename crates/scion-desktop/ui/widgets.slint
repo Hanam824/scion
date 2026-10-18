@@ -1,0 +1,540 @@
+import { ListView, Palette } from "std-widgets.slint";
+import { DiffLine, SplitLine, Span } from "types.slint";
+
+export global Colors {
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+    out property <color> add-bg: dark ? #2ea04326 : #e6ffec;
+    out property <color> del-bg: dark ? #f8514926 : #ffebe9;
+    out property <color> hunk-bg: dark ? #388bfd1a : #ddf4ff;
+    out property <color> header-bg: dark ? #ffffff0d : #f6f8fa;
+    out property <color> empty-bg: dark ? #ffffff08 : #f6f8fa;
+    out property <color> add-fg: dark ? #3fb950 : #1a7f37;
+    out property <color> del-fg: dark ? #f85149 : #cf222e;
+    out property <color> mod-fg: dark ? #d29922 : #9a6700;
+    out property <color> accent: dark ? #2f81f7 : #0969da;
+    out property <color> muted: dark ? #8b949e : #57606a;
+    out property <color> border: dark ? #30363d : #d0d7de;
+    out property <color> hover: dark ? #ffffff0f : #0000000a;
+    out property <color> warn-bg: dark ? #bb800926 : #fff8c5;
+    // The toolbar is dark in both themes, as in GitHub Desktop.
+    out property <color> toolbar: #24292f;
+    out property <color> toolbar-hover: #32383f;
+    out property <color> toolbar-active: #ffffff;
+    out property <color> toolbar-text: #ffffff;
+    out property <color> toolbar-muted: #9198a1;
+
+    pure public function line-bg(kind: int) -> brush {
+        return kind == 1 ? add-bg : kind == 2 ? del-bg : kind == 3 ? hunk-bg : kind == 4 ? header-bg : kind == -1 ? empty-bg : transparent;
+    }
+}
+
+export global Metrics {
+    // Width of the Changes/History sidebar; the Current repository button
+    // and its flyout line up with it, as in GitHub Desktop. Resizable by
+    // dragging the divider; persisted in the config.
+    in-out property <length> sidebar: 320px;
+    out property <length> sidebar-min: 240px;
+    // Width of the other toolbar segments; flyouts match their button.
+    out property <length> segment: 260px;
+}
+
+export global Syntax {
+    pure public function color(cls: int) -> color {
+        if (Colors.dark) {
+            return cls == 1 ? #8b949e : cls == 2 ? #a5d6ff : cls == 3 ? #79c0ff : cls == 4 ? #ff7b72 : cls == 5 ? #d2a8ff : cls == 6 ? #ffa657 : Palette.foreground;
+        }
+        return cls == 1 ? #6e7781 : cls == 2 ? #0a3069 : cls == 3 ? #0550ae : cls == 4 ? #cf222e : cls == 5 ? #8250df : cls == 6 ? #953800 : Palette.foreground;
+    }
+}
+
+export component Icon inherits Image {
+    in property <color> tint: Palette.foreground;
+    width: 16px;
+    height: 16px;
+    colorize: root.tint;
+}
+
+export component Badge inherits Rectangle {
+    in property <string> kind;
+    in property <bool> conflict;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border-width: 1.5px;
+    border-color: root.conflict ? Colors.mod-fg : root.kind == "A" ? Colors.add-fg : root.kind == "D" ? Colors.del-fg : Colors.mod-fg;
+    Text {
+        text: root.conflict ? "!" : root.kind == "A" ? "+" : root.kind == "D" ? "−" : "•";
+        color: root.border-color;
+        font-size: 12px;
+        font-weight: 800;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// A checkbox without internal state: it always shows `checked` from the model.
+export component Check inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> mixed;
+    callback toggled();
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: root.checked || root.mixed ? Colors.accent : Colors.border;
+    background: root.checked || root.mixed ? Colors.accent : Palette.background;
+    TouchArea {
+        clicked => {
+            root.toggled();
+        }
+    }
+    if root.checked: Icon {
+        source: @image-url("icons/check.svg");
+        width: 12px;
+        height: 12px;
+        tint: white;
+    }
+    if root.mixed && !root.checked: Rectangle {
+        width: 8px;
+        height: 2px;
+        background: white;
+    }
+}
+
+// Modal backdrop; swallows clicks so the window behind is inert.
+export component Overlay inherits Rectangle {
+    in property <bool> dim: true;
+    in property <color> shade: #00000066;
+    callback dismissed();
+    background: root.dim ? root.shade : transparent;
+    TouchArea {
+        clicked => {
+            root.dismissed();
+        }
+    }
+    @children
+}
+
+export component Panel inherits Rectangle {
+    in property <string> title;
+    width: 520px;
+    height: lay.preferred-height;
+    background: Palette.background;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Colors.border;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: #00000055;
+    TouchArea { }
+    lay := VerticalLayout {
+        padding: 18px;
+        spacing: 10px;
+        if root.title != "": Text {
+            text: root.title;
+            font-size: 16px;
+            font-weight: 700;
+        }
+        @children
+    }
+}
+
+export component Label inherits Text {
+    font-size: 12px;
+    color: Colors.muted;
+}
+
+// Segment of the dark toolbar: small caption over a bold value.
+export component ToolbarButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> caption;
+    in property <string> value;
+    in property <bool> active;
+    in property <bool> enabled: true;
+    in property <bool> chevron: true;
+    in property <string> badge;
+    callback clicked();
+    width: Metrics.segment;
+    background: root.active ? Palette.background : ta.has-hover && root.enabled ? Colors.toolbar-hover : transparent;
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                source: root.icon;
+                tint: root.active ? Palette.foreground : Colors.toolbar-muted;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.caption;
+                font-size: 11px;
+                color: root.active ? Colors.muted : Colors.toolbar-muted;
+                overflow: elide;
+            }
+            Text {
+                text: root.value;
+                font-weight: 600;
+                color: !root.enabled ? Colors.toolbar-muted : root.active ? Palette.foreground : Colors.toolbar-text;
+                overflow: elide;
+            }
+        }
+        if root.badge != "": VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: 18px;
+                width: max(22px, bt.preferred-width + 10px);
+                border-radius: 9px;
+                background: #ffffff26;
+                bt := Text {
+                    text: root.badge;
+                    color: Colors.toolbar-text;
+                    font-size: 11px;
+                    font-weight: 600;
+                }
+            }
+        }
+        if root.chevron: VerticalLayout {
+            alignment: center;
+            Icon {
+                source: @image-url("icons/chevron.svg");
+                tint: root.active ? Palette.foreground : Colors.toolbar-muted;
+            }
+        }
+    }
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: #ffffff1f;
+    }
+}
+
+export component TabButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked();
+    height: 36px;
+    horizontal-stretch: 1;
+    TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+    Text {
+        text: root.text;
+        font-weight: root.active ? 600 : 400;
+        color: root.active ? Palette.foreground : Colors.muted;
+    }
+    Rectangle {
+        y: parent.height - 2px;
+        height: 2px;
+        background: root.active ? Colors.accent : transparent;
+    }
+}
+
+// Single-line text field at GitHub Desktop's compact height (the std
+// LineEdit is noticeably taller).
+export component CompactInput inherits Rectangle {
+    in property <string> placeholder;
+    in-out property <string> text <=> ti.text;
+    callback edited(string);
+    callback accepted(string);
+    height: 26px;
+    horizontal-stretch: 1;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: ti.has-focus ? Colors.accent : Colors.border;
+    background: Palette.control-background;
+    clip: true;
+    if root.text == "": Text {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        text: root.placeholder;
+        color: Colors.muted;
+        font-size: 13px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    ti := TextInput {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        font-size: 13px;
+        single-line: true;
+        vertical-alignment: center;
+        edited => {
+            root.edited(self.text);
+        }
+        accepted => {
+            root.accepted(self.text);
+        }
+    }
+}
+
+// Full-width call-to-action, like GitHub Desktop's "Commit to **main**":
+// `text` in regular weight followed by `strong` in bold.
+export component PrimaryButton inherits Rectangle {
+    in property <string> text;
+    in property <string> strong;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 30px;
+    horizontal-stretch: 1;
+    border-radius: 6px;
+    background: !root.enabled ? Colors.accent.transparentize(55%) : ta.pressed ? Colors.accent.darker(25%) : ta.has-hover ? Colors.accent.brighter(12%) : Colors.accent;
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            root.clicked();
+        }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        alignment: center;
+        Text {
+            text: root.text;
+            color: root.enabled ? white : #ffffffa6;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.strong;
+            color: root.enabled ? white : #ffffffa6;
+            font-size: 13px;
+            font-weight: 700;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+// Small borderless text button used in headers.
+export component LinkButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 24px;
+    width: t.preferred-width + 16px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: root.active ? Colors.accent : Colors.border;
+    background: root.active ? Colors.hover : ta.has-hover && root.enabled ? Colors.hover : transparent;
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+    t := Text {
+        text: root.text;
+        font-size: 12px;
+        color: !root.enabled ? Colors.muted : root.active ? Colors.accent : Palette.foreground;
+    }
+}
+
+export component PopupItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> danger;
+    callback clicked();
+    height: 28px;
+    background: ta.has-hover ? Colors.accent : transparent;
+    border-radius: 4px;
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            color: ta.has-hover ? white : root.danger ? Colors.del-fg : Palette.foreground;
+        }
+    }
+}
+
+// Code with optional syntax-highlighted spans.
+component Code inherits HorizontalLayout {
+    in property <string> text;
+    in property <[Span]> spans;
+    in property <string> font;
+    in property <bool> wrap;
+    in property <color> color: Palette.foreground;
+    in property <int> weight: 400;
+    spacing: 0;
+    alignment: start;
+    if root.spans.length == 0: Text {
+        horizontal-stretch: 1;
+        text: root.text;
+        font-family: root.font;
+        font-size: 12px;
+        font-weight: root.weight;
+        color: root.color;
+        wrap: root.wrap ? word-wrap : no-wrap;
+        vertical-alignment: center;
+    }
+    for sp in root.spans: Text {
+        text: sp.text;
+        font-family: root.font;
+        font-size: 12px;
+        color: Syntax.color(sp.cls);
+        vertical-alignment: center;
+    }
+}
+
+component LineNo inherits Text {
+    width: 40px;
+    font-size: 11px;
+    color: Colors.muted;
+    horizontal-alignment: right;
+    vertical-alignment: center;
+}
+
+export component DiffView inherits Rectangle {
+    in property <[DiffLine]> lines;
+    in property <string> mono-font;
+    in property <bool> gutter;
+    in property <bool> wrap;
+    /// Longest line in characters, for horizontal scrolling.
+    in property <int> max-chars;
+    in property <string> empty-text: "";
+    background: Palette.background;
+
+    ListView {
+        content-width: root.wrap ? self.visible-width : max(self.visible-width, root.max-chars * 7.3px + (root.gutter ? 300px : 110px));
+        for line in root.lines: Rectangle {
+            height: max(20px, row.preferred-height);
+            background: Colors.line-bg(line.kind);
+            row := HorizontalLayout {
+                padding-left: 4px;
+                padding-right: 8px;
+                spacing: 6px;
+                if root.gutter: Text {
+                    width: 190px;
+                    text: line.gutter;
+                    font-family: root.mono-font;
+                    font-size: 11px;
+                    color: Colors.muted;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                LineNo {
+                    text: line.old-no;
+                    font-family: root.mono-font;
+                }
+                LineNo {
+                    text: line.new-no;
+                    font-family: root.mono-font;
+                }
+                Text {
+                    width: 12px;
+                    text: line.kind == 1 ? "+" : line.kind == 2 ? "−" : "";
+                    font-family: root.mono-font;
+                    color: line.kind == 1 ? Colors.add-fg : Colors.del-fg;
+                    vertical-alignment: center;
+                }
+                Code {
+                    horizontal-stretch: 1;
+                    text: line.text;
+                    spans: line.spans;
+                    font: root.mono-font;
+                    wrap: root.wrap;
+                    weight: line.kind == 4 ? 700 : 400;
+                    color: line.kind == 3 ? Colors.accent : line.kind == 5 ? Colors.muted : Palette.foreground;
+                }
+            }
+        }
+    }
+
+    if root.lines.length == 0 && root.empty-text != "": Text {
+        text: root.empty-text;
+        color: Colors.muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component SplitDiffView inherits Rectangle {
+    in property <[SplitLine]> lines;
+    in property <string> mono-font;
+    in property <bool> wrap;
+    in property <int> max-chars;
+    background: Palette.background;
+
+    ListView {
+        content-width: root.wrap ? self.visible-width : max(self.visible-width, 2 * (root.max-chars * 7.3px + 70px));
+        for line in root.lines: Rectangle {
+            height: max(20px, line.full ? 20px : max(l.preferred-height, r.preferred-height));
+            background: line.full ? Colors.line-bg(line.kind) : transparent;
+            if line.full: HorizontalLayout {
+                padding-left: 8px;
+                Code {
+                    text: line.text;
+                    font: root.mono-font;
+                    weight: line.kind == 4 ? 700 : 400;
+                    color: line.kind == 3 ? Colors.accent : line.kind == 5 ? Colors.muted : Palette.foreground;
+                }
+            }
+            HorizontalLayout {
+                visible: !line.full;
+                l := Rectangle {
+                    width: parent.width / 2;
+                    background: Colors.line-bg(line.left-kind);
+                    HorizontalLayout {
+                        padding-right: 6px;
+                        spacing: 6px;
+                        LineNo {
+                            text: line.left-no;
+                            font-family: root.mono-font;
+                        }
+                        Code {
+                            horizontal-stretch: 1;
+                            text: line.left-text;
+                            spans: line.left-spans;
+                            font: root.mono-font;
+                            wrap: root.wrap;
+                        }
+                    }
+                }
+                Rectangle {
+                    width: 1px;
+                    background: Colors.border;
+                }
+                r := Rectangle {
+                    horizontal-stretch: 1;
+                    background: Colors.line-bg(line.right-kind);
+                    HorizontalLayout {
+                        padding-right: 6px;
+                        spacing: 6px;
+                        LineNo {
+                            text: line.right-no;
+                            font-family: root.mono-font;
+                        }
+                        Code {
+                            horizontal-stretch: 1;
+                            text: line.right-text;
+                            spans: line.right-spans;
+                            font: root.mono-font;
+                            wrap: root.wrap;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

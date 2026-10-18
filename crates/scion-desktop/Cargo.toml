@@ -1,0 +1,30 @@
+[package]
+name = "scion-desktop"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+directories = "5"
+notify = "6.1"
+opener = { version = "0.7", features = ["reveal"] }
+# xdg-portal instead of GTK on Linux keeps the dependency footprint small.
+rfd = { version = "0.14", default-features = false, features = ["xdg-portal", "tokio"] }
+scion-core.workspace = true
+scion-proto.workspace = true
+scion-repo.workspace = true
+scion-server.workspace = true
+scn.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slint = "=1.18.1"
+syntect = { version = "5.2", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
+tokio.workspace = true
+trash = "5"
+
+[build-dependencies]
+slint-build = "=1.18.1"
+
+[dev-dependencies]
+e2e = { path = "../../tests/e2e" }
+tempfile.workspace = true

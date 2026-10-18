@@ -1,0 +1,12 @@
+[package]
+name = "scion-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+blake3.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+similar.workspace = true
+thiserror.workspace = true

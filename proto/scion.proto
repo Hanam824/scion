@@ -1,0 +1,207 @@
+// Scion RPC surface. Designed so a node daemon and regional cache can serve
+// the identical API in front of the server (tiered fleet from the article).
+// Revision fields ("rev", "source", "onto", ...) accept ref names, full or
+// abbreviated changeset ids, and `~N` suffixes.
+syntax = "proto3";
+package scion.v1;
+
+service Scion {
+  // Objects: negotiation is over individual blobs and trees; no packfiles.
+  rpc HasBlobs(HasBlobsRequest) returns (HasBlobsResponse);
+  rpc PutBlobs(stream BlobData) returns (PutBlobsResponse);
+  rpc GetBlobs(GetBlobsRequest) returns (stream BlobData);
+  rpc GetTrees(GetTreesRequest) returns (GetTreesResponse);
+
+  // History. Creating a changeset never moves a ref.
+  rpc CreateChangeset(CreateChangesetRequest) returns (CreateChangesetResponse);
+  rpc GetChangeset(GetChangesetRequest) returns (ChangesetInfo);
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+
+  // Refs: compare-and-swap only.
+  rpc ListRefs(ListRefsRequest) returns (ListRefsResponse);
+  rpc UpdateRef(UpdateRefRequest) returns (UpdateRefResponse);
+
+  // Server-side operations.
+  rpc Merge(MergeRequest) returns (MergeResponse);
+  rpc Rebase(RebaseRequest) returns (MergeResponse);
+  rpc Revert(RevertRequest) returns (MergeResponse);
+  rpc Compare(CompareRequest) returns (CompareResponse);
+  rpc Diff(DiffRequest) returns (DiffResponse);
+  rpc MergeBase(MergeBaseRequest) returns (MergeBaseResponse);
+  rpc Log(LogRequest) returns (LogResponse);
+  rpc Blame(BlameRequest) returns (BlameResponse);
+}
+
+enum FileMode {
+  FILE_MODE_REGULAR = 0;
+  FILE_MODE_EXECUTABLE = 1;
+  FILE_MODE_SYMLINK = 2;
+}
+
+message BlobData {
+  string id = 1;
+  bytes data = 2;
+}
+message HasBlobsRequest { repeated string ids = 1; }
+message HasBlobsResponse { repeated bool present = 1; }
+message PutBlobsResponse { uint64 stored = 1; }
+message GetBlobsRequest { repeated string ids = 1; }
+
+message TreeEntry {
+  string name = 1;
+  bool is_dir = 2;
+  string id = 3;  // tree id for directories, blob id for files
+  FileMode mode = 4;
+}
+message Tree {
+  string id = 1;
+  repeated TreeEntry entries = 2;
+}
+message GetTreesRequest { repeated string ids = 1; }
+message GetTreesResponse { repeated Tree trees = 1; }  // same order as ids
+
+// A change relative to the changeset's first parent.
+message FileChange {
+  string path = 1;
+  bool delete = 2;
+  string blob = 3;
+  FileMode mode = 4;
+}
+message CreateChangesetRequest {
+  repeated string parents = 1;  // changeset ids
+  string author = 2;
+  string message = 3;
+  int64 timestamp = 4;  // unix seconds; 0 = now
+  repeated FileChange changes = 5;
+}
+message CreateChangesetResponse {
+  string id = 1;
+  string root_tree = 2;
+}
+
+message GetChangesetRequest { string rev = 1; }
+message ChangesetInfo {
+  string id = 1;
+  repeated string parents = 2;
+  string author = 3;
+  string message = 4;
+  int64 timestamp = 5;
+  repeated FileChange changes = 6;  // omitted in Log responses
+  string root_tree = 7;
+  uint64 generation = 8;
+}
+
+message ResolveRequest { string rev = 1; }
+message ResolveResponse {
+  string id = 1;
+  string root_tree = 2;
+}
+
+message Ref {
+  string name = 1;
+  string target = 2;
+}
+message ListRefsRequest {}
+message ListRefsResponse { repeated Ref refs = 1; }
+message UpdateRefRequest {
+  string name = 1;
+  string expected = 2;    // empty = ref must not exist
+  string new_target = 3;  // revision; empty = delete
+}
+message UpdateRefResponse {
+  bool ok = 1;
+  string current = 2;
+}
+
+enum MergeStrategy {
+  MERGE_STRATEGY_REBASE = 0;
+  MERGE_STRATEGY_MERGE = 1;
+}
+message MergeRequest {
+  string target_ref = 1;
+  string source = 2;
+  MergeStrategy strategy = 3;
+  string author = 4;
+  string message = 5;
+}
+message RebaseRequest {
+  string source = 1;
+  string onto = 2;
+}
+message Conflict {
+  string path = 1;
+  string kind = 2;
+  string detail = 3;        // content conflicts: whole file with markers
+  string target_blob = 4;   // empty = deleted on the target side
+  FileMode target_mode = 5;
+  string source_blob = 6;   // empty = deleted on the source side
+  FileMode source_mode = 7;
+}
+message MergeResponse {
+  string id = 1;  // empty when there are conflicts
+  bool fast_forward = 2;
+  bool up_to_date = 3;
+  repeated Conflict conflicts = 4;
+  uint32 attempts = 5;
+  // With conflicts: the changeset the merge was computed against, and the
+  // cleanly merged changes relative to it, so a client can finish the merge.
+  string target = 6;
+  repeated FileChange resolved = 7;
+}
+
+message RevertRequest {
+  string changeset = 1;
+  string onto = 2;
+  string author = 3;
+}
+
+message CompareRequest {
+  string a = 1;
+  string b = 2;
+}
+message CompareResponse {
+  uint64 ahead = 1;   // reachable from a, not b
+  uint64 behind = 2;  // reachable from b, not a
+  bool truncated = 3;
+}
+
+message DiffRequest {
+  string from = 1;  // empty = empty tree
+  string to = 2;
+  repeated string paths = 3;  // directory prefixes; empty = everything
+  bool patch = 4;
+}
+message FileDiff {
+  string path = 1;
+  string old_blob = 2;  // empty = added
+  FileMode old_mode = 3;
+  string new_blob = 4;  // empty = deleted
+  FileMode new_mode = 5;
+  string patch = 6;
+}
+message DiffResponse { repeated FileDiff files = 1; }
+
+message MergeBaseRequest {
+  string a = 1;
+  string b = 2;
+}
+message MergeBaseResponse { string id = 1; }  // empty = none
+
+message LogRequest {
+  string rev = 1;
+  string path = 2;
+  uint32 limit = 3;
+}
+message LogResponse { repeated ChangesetInfo changesets = 1; }
+
+message BlameRequest {
+  string rev = 1;
+  string path = 2;
+}
+message BlameLine {
+  string changeset = 1;
+  string author = 2;
+  int64 timestamp = 3;
+  string text = 4;
+}
+message BlameResponse { repeated BlameLine lines = 1; }

@@ -1,0 +1,15 @@
+[package]
+name = "scn"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+scion-core.workspace = true
+scion-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tonic.workspace = true

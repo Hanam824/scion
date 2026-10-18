@@ -1,0 +1,12 @@
+[package]
+name = "scion-import"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+scion-core.workspace = true
+scion-proto.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

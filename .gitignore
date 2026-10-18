@@ -1,0 +1,4 @@
+/target
+/scion-data
+*.sqlite-wal
+*.sqlite-shm

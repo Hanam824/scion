@@ -1,0 +1,72 @@
+// Row types shared between the UI and Rust (generated as Rust structs).
+
+export struct FileRow {
+    path: string,
+    kind: string, // "A" | "M" | "D"
+    checked: bool,
+    conflict: bool,
+}
+
+export struct LogRow {
+    id: string,
+    short: string,
+    message: string,
+    author: string,
+    date: string,
+}
+
+// cls: see `SynClass` in src/model.rs
+export struct Span {
+    text: string,
+    cls: int,
+}
+
+// kind: 0 context, 1 add, 2 delete, 3 hunk, 4 file header, 5 note
+export struct DiffLine {
+    kind: int,
+    old-no: string,
+    new-no: string,
+    text: string,
+    gutter: string,
+    spans: [Span],
+}
+
+// Side-by-side row. `full` rows (headers, hunks, notes) span both columns
+// and use `kind`/`text`; otherwise each side has its own kind (-1 = empty).
+export struct SplitLine {
+    full: bool,
+    kind: int,
+    text: string,
+    left-kind: int,
+    left-no: string,
+    left-text: string,
+    left-spans: [Span],
+    right-kind: int,
+    right-no: string,
+    right-text: string,
+    right-spans: [Span],
+}
+
+export struct ChangeRow {
+    path: string,
+    kind: string,
+}
+
+export struct BranchRow {
+    name: string,
+    short: string,
+    current: bool,
+}
+
+export struct ConflictRow {
+    path: string,
+    kind: string,
+}
+
+export struct RepoRow {
+    name: string,
+    path: string,
+    current: bool,
+    // Group heading shown above this row ("" = none).
+    section: string,
+}

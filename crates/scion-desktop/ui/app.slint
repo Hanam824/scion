@@ -1,0 +1,2071 @@
+import { Button, LineEdit, ListView, CheckBox, ComboBox, Palette, AboutSlint, Spinner, ScrollView } from "std-widgets.slint";
+import { FileRow, LogRow, DiffLine, SplitLine, ChangeRow, BranchRow, ConflictRow, RepoRow } from "types.slint";
+import { Colors, Metrics, Icon, Badge, Check, Overlay, Panel, Label, ToolbarButton, TabButton, LinkButton, PrimaryButton, CompactInput, PopupItem, DiffView, SplitDiffView } from "widgets.slint";
+
+// Header bar plus unified/split diff, shared by the Changes and History tabs.
+component DiffPanel inherits VerticalLayout {
+    in property <string> title;
+    in property <[DiffLine]> lines;
+    in property <[SplitLine]> split-lines;
+    in property <bool> gutter;
+    in property <int> max-chars;
+    in property <bool> blame-available;
+    in property <bool> blame-mode;
+    in property <string> conflict-path;
+    in property <string> mono-font;
+    in property <string> reveal-label;
+    in property <bool> has-file;
+    in property <bool> busy;
+    in property <string> empty-text;
+    in-out property <bool> split-view;
+    in-out property <bool> wrap;
+    callback toggle-blame();
+    callback options-changed();
+    callback conflict-action(string);
+    callback file-action(string);
+
+    Rectangle {
+        height: 40px;
+        background: Colors.header-bg;
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 8px;
+            spacing: 6px;
+            alignment: stretch;
+            Text {
+                horizontal-stretch: 1;
+                text: root.title;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if root.has-file && !root.gutter: VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    spacing: 0;
+                    LinkButton {
+                        text: "Unified";
+                        active: !root.split-view;
+                        clicked => {
+                            root.split-view = false;
+                            root.options-changed();
+                        }
+                    }
+                    LinkButton {
+                        text: "Split";
+                        active: root.split-view;
+                        clicked => {
+                            root.split-view = true;
+                            root.options-changed();
+                        }
+                    }
+                }
+            }
+            if root.has-file: VerticalLayout {
+                alignment: center;
+                LinkButton {
+                    text: "Wrap";
+                    active: root.wrap;
+                    clicked => {
+                        root.wrap = !root.wrap;
+                        root.options-changed();
+                    }
+                }
+            }
+            if root.blame-available: VerticalLayout {
+                alignment: center;
+                LinkButton {
+                    text: root.blame-mode ? "Show diff" : "Blame";
+                    active: root.blame-mode;
+                    enabled: !root.busy;
+                    clicked => {
+                        root.toggle-blame();
+                    }
+                }
+            }
+            if root.has-file: VerticalLayout {
+                alignment: center;
+                LinkButton {
+                    text: "Open";
+                    clicked => {
+                        root.file-action("open");
+                    }
+                }
+            }
+            if root.has-file: VerticalLayout {
+                alignment: center;
+                LinkButton {
+                    text: root.reveal-label;
+                    clicked => {
+                        root.file-action("reveal");
+                    }
+                }
+            }
+        }
+        Rectangle {
+            y: parent.height - 1px;
+            height: 1px;
+            background: Colors.border;
+        }
+    }
+
+    if root.conflict-path != "": Rectangle {
+        height: 44px;
+        background: Colors.warn-bg;
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 8px;
+            spacing: 6px;
+            Text {
+                horizontal-stretch: 1;
+                text: "This file has conflicts. Edit it, or choose a version:";
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            VerticalLayout {
+                alignment: center;
+                LinkButton {
+                    text: "Use my version";
+                    enabled: !root.busy;
+                    clicked => {
+                        root.conflict-action("mine");
+                    }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                LinkButton {
+                    text: "Use theirs";
+                    enabled: !root.busy;
+                    clicked => {
+                        root.conflict-action("theirs");
+                    }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                LinkButton {
+                    text: "Mark as resolved";
+                    enabled: !root.busy;
+                    clicked => {
+                        root.conflict-action("done");
+                    }
+                }
+            }
+        }
+    }
+
+    if !root.split-view || root.gutter || !root.has-file: DiffView {
+        vertical-stretch: 1;
+        lines: root.lines;
+        gutter: root.gutter;
+        wrap: root.wrap;
+        max-chars: root.max-chars;
+        mono-font: root.mono-font;
+        empty-text: root.empty-text;
+    }
+    if root.split-view && !root.gutter && root.has-file: SplitDiffView {
+        vertical-stretch: 1;
+        lines: root.split-lines;
+        wrap: root.wrap;
+        max-chars: root.max-chars;
+        mono-font: root.mono-font;
+    }
+}
+
+component SuggestionCard inherits Rectangle {
+    in property <string> text;
+    in property <string> detail;
+    in property <string> action;
+    callback clicked();
+    height: 64px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: Colors.border;
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.text;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Label {
+                text: root.detail;
+                overflow: elide;
+            }
+        }
+        Button {
+            text: root.action;
+            clicked => {
+                root.clicked();
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: root.has-repo ? root.repo-name + " — Scion Desktop" : "Scion Desktop";
+    preferred-width: 1200px;
+    preferred-height: 780px;
+    min-width: 860px;
+    min-height: 520px;
+    default-font-size: 13px;
+    background: Palette.background;
+
+    // Repository and toolbar
+    in property <string> mono-font;
+    in property <string> reveal-label: "Show in Finder";
+    in property <bool> has-repo: false;
+    in property <string> repo-name;
+    in property <string> repo-info;
+    in property <string> branch: "main";
+    in property <string> base-short;
+    in property <int> ahead;
+    in property <int> behind;
+    in property <bool> unpublished;
+    in property <bool> busy: false;
+    in property <string> status-text: "Ready";
+    in property <bool> status-error: false;
+    in property <[RepoRow]> recent;
+
+    // Changes tab
+    in-out property <int> tab: 0;
+    in property <[FileRow]> files;
+    /// All changed files; `files` is the filtered view of them.
+    in property <int> total-files;
+    in-out property <string> file-filter;
+    /// 0 all, 1 included, 2 excluded, 3 new, 4 modified, 5 deleted, 6 conflicted
+    in-out property <int> file-kind-filter;
+    in property <string> author-initials: "?";
+    in-out property <bool> show-coauthors;
+    in-out property <string> coauthors;
+    in property <int> checked-count;
+    in-out property <int> selected-file: -1;
+    in property <bool> resolution-active;
+    in property <int> unresolved;
+    in-out property <string> summary;
+    in-out property <string> description;
+
+    // Diff panel
+    in property <[DiffLine]> diff;
+    in property <[SplitLine]> split-diff;
+    in property <string> diff-title;
+    in property <bool> diff-gutter;
+    in property <int> diff-chars;
+    in property <bool> has-file;
+    in property <bool> blame-available;
+    in-out property <bool> blame-mode;
+    in property <string> conflict-path;
+    in-out property <bool> split-view;
+    in-out property <bool> wrap;
+
+    // History tab
+    in property <[LogRow]> history;
+    in-out property <int> selected-change: -1;
+    in-out property <string> history-filter;
+    in property <bool> has-changeset;
+    in property <string> cs-id;
+    in property <string> cs-summary;
+    in property <string> cs-body;
+    in property <string> cs-meta;
+    in property <[ChangeRow]> cs-files;
+    in-out property <int> cs-selected-file: 0;
+
+    // Branches
+    in property <[BranchRow]> branches;
+    in-out property <string> branch-filter;
+    in-out property <string> repo-filter;
+
+    // Dialogs
+    in-out property <bool> show-repos: false;
+    in-out property <bool> show-branches: false;
+    in-out property <bool> show-clone: false;
+    in-out property <bool> show-conflicts: false;
+    in-out property <bool> show-error: false;
+    in-out property <bool> show-about: false;
+    in-out property <bool> show-settings: false;
+    in-out property <bool> show-input: false;
+    in-out property <bool> show-confirm: false;
+    in property <string> error-text;
+    in property <[ConflictRow]> conflicts;
+    in property <[DiffLine]> conflict-diff;
+    in-out property <int> selected-conflict: 0;
+    in property <bool> can-resolve;
+    in-out property <string> clone-url: "http://127.0.0.1:7777";
+    in-out property <string> clone-dest;
+    in-out property <string> clone-track: "main";
+    in-out property <string> clone-sparse;
+    in-out property <bool> clone-local: true;
+    in property <string> input-title;
+    in property <string> input-label;
+    in property <string> input-button;
+    in-out property <string> input-value;
+    in property <string> confirm-title;
+    in property <string> confirm-text;
+    in property <string> confirm-button;
+    in-out property <string> set-author;
+    in-out property <string> set-editor;
+    in-out property <string> set-terminal;
+    in-out property <int> set-strategy;
+    in-out property <int> set-theme;
+
+    callback open-repo();
+    callback open-path(string);
+    callback repo-filter-changed(string);
+    callback repo-action(string, string);
+    callback clone-browse();
+    callback clone-submit();
+    callback tab-changed(int);
+    callback toggle-file(int);
+    callback toggle-all();
+    callback file-filter-changed();
+    callback open-settings();
+    callback select-file(int);
+    callback file-menu(string, int);
+    callback discard-all();
+    callback commit();
+    callback land-or-sync();
+    callback sync();
+    callback window-minimize();
+    callback window-zoom();
+    callback open-url(string);
+    callback refresh();
+    callback toggle-blame();
+    callback diff-options-changed();
+    callback conflict-action(string);
+    callback file-action(string);
+    callback abort-resolution();
+    callback history-filter-changed(string);
+    callback load-more();
+    callback select-change(int);
+    callback select-cs-file(int);
+    callback revert-changeset();
+    callback open-branches();
+    callback switch-branch(string);
+    callback new-branch();
+    callback rename-branch(string);
+    callback delete-branch(string);
+    callback merge-branch(string);
+    callback branch-filter-changed(string);
+    callback start-resolution();
+    callback select-conflict(int);
+    callback open-editor();
+    callback reveal-repo();
+    callback open-terminal();
+    callback input-accepted(string);
+    callback confirm-accepted();
+    callback save-settings();
+    callback sidebar-resized(length);
+    in-out property <length> sidebar-width <=> Metrics.sidebar;
+    public function apply-theme(theme: int) {
+        if (theme == 1) {
+            Palette.color-scheme = ColorScheme.light;
+        } else if (theme == 2) {
+            Palette.color-scheme = ColorScheme.dark;
+        }
+    }
+
+    private property <bool> can-act: root.has-repo && !root.busy;
+    private property <bool> all-checked: root.total-files > 0 && root.checked-count == root.total-files;
+    private property <bool> can-commit: root.can-act && root.summary != "" && root.checked-count > 0 && root.unresolved == 0;
+
+
+    // Menu bar: native at the top of the screen on macOS, drawn in the
+    // window elsewhere. Text-editing shortcuts (copy, paste, undo, select
+    // all) are left to the text fields, so the Edit menu doesn't bind them.
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem {
+                title: "Clone repository…";
+                shortcut: @keys(Control + Shift + O);
+                activated => {
+                    root.show-repos = false;
+                    root.show-clone = true;
+                }
+            }
+            MenuItem {
+                title: "Add local repository…";
+                shortcut: @keys(Control + O);
+                activated => {
+                    root.show-repos = false;
+                    root.open-repo();
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Settings…";
+                shortcut: @keys(Control + Comma);
+                activated => {
+                    root.open-settings();
+                }
+            }
+        }
+        Menu {
+            title: "Edit";
+            MenuItem {
+                title: root.all-checked ? "Deselect all changes" : "Select all changes";
+                enabled: root.can-act && root.total-files > 0;
+                activated => {
+                    root.toggle-all();
+                }
+            }
+            MenuItem {
+                title: "Discard all changes…";
+                enabled: root.can-act && root.total-files > 0;
+                activated => {
+                    root.discard-all();
+                }
+            }
+        }
+        Menu {
+            title: "View";
+            MenuItem {
+                title: "Changes";
+                shortcut: @keys(Control + Digit1);
+                enabled: root.has-repo;
+                activated => {
+                    root.tab = 0;
+                    root.tab-changed(0);
+                }
+            }
+            MenuItem {
+                title: "History";
+                shortcut: @keys(Control + Digit2);
+                enabled: root.has-repo;
+                activated => {
+                    root.tab = 1;
+                    root.tab-changed(1);
+                }
+            }
+            MenuItem {
+                title: "Repository list";
+                shortcut: @keys(Control + T);
+                activated => {
+                    root.show-branches = false;
+                    root.show-repos = !root.show-repos;
+                    if (root.show-repos) {
+                        root.repo-filter = "";
+                        root.repo-filter-changed("");
+                    }
+                }
+            }
+            MenuItem {
+                title: "Branches list";
+                shortcut: @keys(Control + B);
+                enabled: root.can-act;
+                activated => {
+                    root.show-repos = false;
+                    root.show-branches = !root.show-branches;
+                    if (root.show-branches) {
+                        root.branch-filter = "";
+                        root.open-branches();
+                    }
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: root.split-view ? "Show unified diff" : "Show split diff";
+                enabled: root.has-repo;
+                activated => {
+                    root.split-view = !root.split-view;
+                    root.diff-options-changed();
+                }
+            }
+            MenuItem {
+                title: root.wrap ? "Don't wrap long lines" : "Wrap long lines";
+                enabled: root.has-repo;
+                activated => {
+                    root.wrap = !root.wrap;
+                    root.diff-options-changed();
+                }
+            }
+            MenuItem {
+                title: root.blame-mode ? "Hide blame" : "Show blame";
+                enabled: root.can-act && root.blame-available;
+                activated => {
+                    root.blame-mode = !root.blame-mode;
+                    root.toggle-blame();
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Refresh";
+                shortcut: @keys(Control + R);
+                enabled: root.can-act;
+                activated => {
+                    root.refresh();
+                }
+            }
+        }
+        Menu {
+            title: "Repository";
+            MenuItem {
+                title: root.unpublished ? "Publish branch" : root.ahead > 0 ? "Land to " + root.branch : "Sync " + root.branch;
+                shortcut: @keys(Control + P);
+                enabled: root.can-act;
+                activated => {
+                    root.land-or-sync();
+                }
+            }
+            MenuItem {
+                title: "Sync from server";
+                shortcut: @keys(Control + Shift + P);
+                enabled: root.can-act && !root.unpublished;
+                activated => {
+                    root.sync();
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: root.reveal-label;
+                shortcut: @keys(Control + Shift + F);
+                enabled: root.has-repo;
+                activated => {
+                    root.reveal-repo();
+                }
+            }
+            MenuItem {
+                title: "Open in terminal";
+                enabled: root.has-repo;
+                activated => {
+                    root.open-terminal();
+                }
+            }
+            MenuItem {
+                title: "Open in external editor";
+                shortcut: @keys(Control + Shift + A);
+                enabled: root.has-repo;
+                activated => {
+                    root.open-editor();
+                }
+            }
+        }
+        Menu {
+            title: "Branch";
+            MenuItem {
+                title: "New branch…";
+                shortcut: @keys(Control + Shift + N);
+                enabled: root.can-act;
+                activated => {
+                    root.new-branch();
+                }
+            }
+            MenuItem {
+                title: "Rename…";
+                enabled: root.can-act;
+                activated => {
+                    root.rename-branch(root.branch);
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Revert selected changeset";
+                enabled: root.can-act && root.tab == 1 && root.has-changeset;
+                activated => {
+                    root.revert-changeset();
+                }
+            }
+        }
+        Menu {
+            title: "Window";
+            MenuItem {
+                title: "Minimize";
+                shortcut: @keys(Control + M);
+                activated => {
+                    root.window-minimize();
+                }
+            }
+            MenuItem {
+                title: "Zoom";
+                activated => {
+                    root.window-zoom();
+                }
+            }
+        }
+        Menu {
+            title: "Help";
+            MenuItem {
+                title: "About Scion";
+                activated => {
+                    root.open-url("https://www.anthropic.com/engineering/redesigning-source-control");
+                }
+            }
+            MenuItem {
+                title: "About Scion Desktop";
+                activated => {
+                    root.show-settings = false;
+                    root.show-about = true;
+                }
+            }
+        }
+    }
+
+    VerticalLayout {
+        // Toolbar
+        Rectangle {
+            height: 52px;
+            background: Colors.toolbar;
+            HorizontalLayout {
+                ToolbarButton {
+                    width: Metrics.sidebar;
+                    icon: @image-url("icons/repo.svg");
+                    caption: "Current repository";
+                    value: root.has-repo ? root.repo-name : "None";
+                    active: root.show-repos;
+                    clicked => {
+                        root.show-branches = false;
+                        root.show-repos = !root.show-repos;
+                        if (root.show-repos) {
+                            root.repo-filter = "";
+                            root.repo-filter-changed("");
+                        }
+                    }
+                }
+                ToolbarButton {
+                    icon: @image-url("icons/branch.svg");
+                    caption: "Current branch";
+                    value: root.has-repo ? root.branch : "—";
+                    enabled: root.can-act;
+                    active: root.show-branches;
+                    clicked => {
+                        root.show-repos = false;
+                        root.show-branches = !root.show-branches;
+                        if (root.show-branches) {
+                            root.branch-filter = "";
+                            root.open-branches();
+                        }
+                    }
+                }
+                ToolbarButton {
+                    icon: root.ahead > 0 || root.unpublished ? @image-url("icons/up.svg") : root.behind > 0 ? @image-url("icons/down.svg") : @image-url("icons/sync.svg");
+                    caption: !root.has-repo ? "" : root.unpublished ? "Create " + root.branch + " on the server" : root.ahead > 0 ? "Publish your changesets" : root.behind > 0 ? "New changes on " + root.branch : "Up to date at " + root.base-short;
+                    value: root.unpublished ? "Publish branch" : root.ahead > 0 ? "Land to " + root.branch : "Sync " + root.branch;
+                    badge: root.ahead > 0 ? "↑" + root.ahead : root.behind > 0 ? "↓" + root.behind : "";
+                    chevron: false;
+                    enabled: root.can-act;
+                    clicked => {
+                        root.land-or-sync();
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                if root.busy: VerticalLayout {
+                    alignment: center;
+                    padding-right: 10px;
+                    Spinner {
+                        width: 20px;
+                        height: 20px;
+                        indeterminate: true;
+                    }
+                }
+                Rectangle {
+                    width: 52px;
+                    background: gta.has-hover ? Colors.toolbar-hover : transparent;
+                    gta := TouchArea {
+                        clicked => {
+                            root.open-settings();
+                        }
+                    }
+                    Icon {
+                        source: @image-url("icons/gear.svg");
+                        tint: Colors.toolbar-muted;
+                    }
+                }
+            }
+        }
+
+        if !root.has-repo: Rectangle {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    alignment: center;
+                    VerticalLayout {
+                        width: 520px;
+                        spacing: 12px;
+                        Text {
+                            text: "Let's get started!";
+                            font-size: 26px;
+                            font-weight: 700;
+                        }
+                        Label {
+                            text: "Add a repository to Scion Desktop. Commits, merges and rebases run on the Scion server — there is nothing to push.";
+                            wrap: word-wrap;
+                        }
+                        SuggestionCard {
+                            text: "Clone a repository";
+                            detail: "From a Scion server, or the built-in local one";
+                            action: "Clone…";
+                            clicked => {
+                                root.show-clone = true;
+                            }
+                        }
+                        SuggestionCard {
+                            text: "Open a working copy";
+                            detail: "A folder previously cloned with scn or Scion Desktop";
+                            action: "Open…";
+                            clicked => {
+                                root.open-repo();
+                            }
+                        }
+                        if root.recent.length > 0: Label {
+                            text: "Recent";
+                        }
+                        for r[i] in root.recent: Rectangle {
+                            height: 40px;
+                            border-radius: 4px;
+                            background: wta.has-hover ? Colors.hover : transparent;
+                            wta := TouchArea {
+                                clicked => {
+                                    root.open-path(r.path);
+                                }
+                            }
+                            VerticalLayout {
+                                padding-left: 8px;
+                                alignment: center;
+                                Text {
+                                    text: r.name;
+                                    font-weight: 600;
+                                }
+                                Label {
+                                    text: r.path;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.has-repo: HorizontalLayout {
+            vertical-stretch: 1;
+
+            // Sidebar
+            VerticalLayout {
+                width: Metrics.sidebar;
+                HorizontalLayout {
+                    TabButton {
+                        text: "Changes" + (root.total-files > 0 ? " (" + root.total-files + ")" : "");
+                        active: root.tab == 0;
+                        clicked => {
+                            root.tab = 0;
+                            root.tab-changed(0);
+                        }
+                    }
+                    TabButton {
+                        text: "History";
+                        active: root.tab == 1;
+                        clicked => {
+                            root.tab = 1;
+                            root.tab-changed(1);
+                        }
+                    }
+                }
+                Rectangle {
+                    height: 1px;
+                    background: Colors.border;
+                }
+
+                if root.tab == 0: VerticalLayout {
+                    vertical-stretch: 1;
+                    if root.resolution-active: Rectangle {
+                        height: 40px;
+                        background: Colors.warn-bg;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 8px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: root.unresolved > 0 ? "Resolving conflicts · " + root.unresolved + " left" : "Conflicts resolved — commit to finish";
+                                vertical-alignment: center;
+                                font-weight: 600;
+                                overflow: elide;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                LinkButton {
+                                    text: "Abort";
+                                    enabled: !root.busy;
+                                    clicked => {
+                                        root.abort-resolution();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        padding: 8px;
+                        padding-bottom: 2px;
+                        spacing: 6px;
+                        filter-btn := Rectangle {
+                            width: 44px;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: root.file-kind-filter != 0 ? Colors.accent : Colors.border;
+                            background: fba.has-hover ? Colors.hover : transparent;
+                            fba := TouchArea {
+                                clicked => {
+                                    kind-menu.show();
+                                }
+                            }
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 2px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Icon {
+                                        source: @image-url("icons/filter.svg");
+                                        tint: root.file-kind-filter != 0 ? Colors.accent : Palette.foreground;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Icon {
+                                        source: @image-url("icons/chevron.svg");
+                                        width: 10px;
+                                        height: 10px;
+                                        tint: Colors.muted;
+                                    }
+                                }
+                            }
+                        }
+                        CompactInput {
+                            placeholder: "Filter";
+                            text <=> root.file-filter;
+                            edited(t) => {
+                                root.file-filter-changed();
+                            }
+                        }
+                    }
+                    kind-menu := PopupWindow {
+                        x: 8px;
+                        y: 40px;
+                        width: 220px;
+                        height: 7 * 28px + 10px;
+                        Rectangle {
+                            background: Palette.background;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: Colors.border;
+                            drop-shadow-blur: 12px;
+                            drop-shadow-color: #00000040;
+                            VerticalLayout {
+                                padding: 5px;
+                                for label[k] in ["All files", "Included in commit", "Excluded from commit", "New files", "Modified files", "Deleted files", "Conflicted files"]: PopupItem {
+                                    text: (k == root.file-kind-filter ? "✓  " : "    ") + label;
+                                    clicked => {
+                                        root.file-kind-filter = k;
+                                        root.file-filter-changed();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        height: 34px;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 8px;
+                            spacing: 8px;
+                            VerticalLayout {
+                                alignment: center;
+                                Check {
+                                    checked: root.all-checked;
+                                    mixed: root.checked-count > 0;
+                                    toggled => {
+                                        root.toggle-all();
+                                    }
+                                }
+                            }
+                            Text {
+                                horizontal-stretch: 1;
+                                text: root.total-files == 1 ? "1 changed file" : root.total-files + " changed files";
+                                vertical-alignment: center;
+                                color: Colors.muted;
+                            }
+                            if root.total-files > 0: VerticalLayout {
+                                alignment: center;
+                                LinkButton {
+                                    text: "Discard all…";
+                                    enabled: root.can-act;
+                                    clicked => {
+                                        root.discard-all();
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            y: parent.height - 1px;
+                            height: 1px;
+                            background: Colors.border;
+                        }
+                    }
+                    if root.total-files > 0 && root.files.length == 0: Text {
+                        text: "No files match the filter";
+                        color: Colors.muted;
+                        horizontal-alignment: center;
+                    }
+                    ListView {
+                        vertical-stretch: 1;
+                        for f[i] in root.files: Rectangle {
+                            height: 30px;
+                            background: i == root.selected-file ? Palette.selection-background : fta.has-hover ? Colors.hover : transparent;
+                            fta := TouchArea {
+                                clicked => {
+                                    root.selected-file = i;
+                                    root.blame-mode = false;
+                                    root.select-file(i);
+                                }
+                                pointer-event(ev) => {
+                                    if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.up) {
+                                        root.selected-file = i;
+                                        root.select-file(i);
+                                        menu.show();
+                                    }
+                                }
+                            }
+                            menu := PopupWindow {
+                                x: fta.mouse-x;
+                                y: fta.mouse-y;
+                                width: 220px;
+                                height: 3 * 28px + 10px;
+                                Rectangle {
+                                    background: Palette.background;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: Colors.border;
+                                    drop-shadow-blur: 12px;
+                                    drop-shadow-color: #00000040;
+                                    VerticalLayout {
+                                        padding: 5px;
+                                        PopupItem {
+                                            text: "Discard changes…";
+                                            danger: true;
+                                            clicked => {
+                                                root.file-menu("discard", i);
+                                            }
+                                        }
+                                        PopupItem {
+                                            text: "Open in editor";
+                                            clicked => {
+                                                root.file-menu("open", i);
+                                            }
+                                        }
+                                        PopupItem {
+                                            text: root.reveal-label;
+                                            clicked => {
+                                                root.file-menu("reveal", i);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 8px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Check {
+                                        checked: f.checked;
+                                        toggled => {
+                                            root.toggle-file(i);
+                                        }
+                                    }
+                                }
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: f.path;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    color: i == root.selected-file ? Palette.selection-foreground : Palette.foreground;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Badge {
+                                        kind: f.kind;
+                                        conflict: f.conflict;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        height: 1px;
+                        background: Colors.border;
+                    }
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 24px;
+                                    height: 24px;
+                                    border-radius: 12px;
+                                    background: Colors.accent;
+                                    Text {
+                                        text: root.author-initials;
+                                        color: white;
+                                        font-size: 10px;
+                                        font-weight: 700;
+                                    }
+                                }
+                            }
+                            CompactInput {
+                                placeholder: "Summary (required)";
+                                text <=> root.summary;
+                            }
+                        }
+                        // Description with an inline footer, as in GitHub Desktop.
+                        Rectangle {
+                            height: 150px;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: desc.has-focus ? Colors.accent : Colors.border;
+                            background: Palette.control-background;
+                            clip: true;
+                            VerticalLayout {
+                                Rectangle {
+                                    vertical-stretch: 1;
+                                    if root.description == "": Text {
+                                        x: 9px;
+                                        y: 7px;
+                                        text: "Description";
+                                        color: Colors.muted;
+                                    }
+                                    Flickable {
+                                        content-height: max(self.height, desc.preferred-height + 14px);
+                                        desc := TextInput {
+                                            x: 9px;
+                                            y: 7px;
+                                            width: parent.width - 18px;
+                                            single-line: false;
+                                            wrap: word-wrap;
+                                            text <=> root.description;
+                                        }
+                                    }
+                                }
+                                Rectangle {
+                                    height: 30px;
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        spacing: 2px;
+                                        alignment: start;
+                                        Rectangle {
+                                            width: 28px;
+                                            border-radius: 4px;
+                                            background: root.show-coauthors ? Colors.hover : caa.has-hover ? Colors.hover : transparent;
+                                            caa := TouchArea {
+                                                clicked => {
+                                                    root.show-coauthors = !root.show-coauthors;
+                                                }
+                                            }
+                                            Icon {
+                                                source: @image-url("icons/person-add.svg");
+                                                tint: root.show-coauthors ? Colors.accent : Colors.muted;
+                                            }
+                                        }
+                                        Rectangle {
+                                            width: 1px;
+                                            background: Colors.border;
+                                        }
+                                        Rectangle {
+                                            width: 28px;
+                                            border-radius: 4px;
+                                            background: csa.has-hover ? Colors.hover : transparent;
+                                            csa := TouchArea {
+                                                clicked => {
+                                                    root.open-settings();
+                                                }
+                                            }
+                                            Icon {
+                                                source: @image-url("icons/gear.svg");
+                                                tint: Colors.muted;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if root.show-coauthors: CompactInput {
+                            placeholder: "Co-authors: Name <email>, …";
+                            text <=> root.coauthors;
+                        }
+                        PrimaryButton {
+                            text: root.all-checked || root.checked-count == 0 ? "Commit to " : "Commit " + root.checked-count + " of " + root.total-files + " files to ";
+                            strong: root.branch;
+                            enabled: root.can-commit;
+                            clicked => {
+                                root.commit();
+                            }
+                        }
+                    }
+                }
+
+                if root.tab == 1: VerticalLayout {
+                    vertical-stretch: 1;
+                    HorizontalLayout {
+                        padding: 8px;
+                        LineEdit {
+                            placeholder-text: "Filter by path (Enter)";
+                            text <=> root.history-filter;
+                            accepted(t) => {
+                                root.history-filter-changed(t);
+                            }
+                        }
+                    }
+                    ListView {
+                        vertical-stretch: 1;
+                        for c[i] in root.history: Rectangle {
+                            height: 52px;
+                            background: i == root.selected-change ? Palette.selection-background : hta.has-hover ? Colors.hover : transparent;
+                            hta := TouchArea {
+                                clicked => {
+                                    root.selected-change = i;
+                                    root.cs-selected-file = 0;
+                                    root.blame-mode = false;
+                                    root.select-change(i);
+                                }
+                            }
+                            VerticalLayout {
+                                padding-left: 12px;
+                                padding-right: 10px;
+                                alignment: center;
+                                spacing: 3px;
+                                Text {
+                                    text: c.message;
+                                    font-weight: 600;
+                                    overflow: elide;
+                                    color: i == root.selected-change ? Palette.selection-foreground : Palette.foreground;
+                                }
+                                Text {
+                                    text: c.author + " · " + c.date + " · " + c.short;
+                                    font-size: 11px;
+                                    color: Colors.muted;
+                                    overflow: elide;
+                                }
+                            }
+                            Rectangle {
+                                y: parent.height - 1px;
+                                height: 1px;
+                                background: Colors.border;
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        padding: 8px;
+                        Button {
+                            text: "Load more";
+                            enabled: root.can-act && root.history.length > 0;
+                            clicked => {
+                                root.load-more();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Divider; drag to resize the sidebar.
+            Rectangle {
+                width: 1px;
+                background: splitter.pressed || splitter.has-hover ? Colors.accent : Colors.border;
+                splitter := TouchArea {
+                    x: -3px;
+                    width: 7px;
+                    mouse-cursor: col-resize;
+                    moved => {
+                        if self.pressed {
+                            Metrics.sidebar = clamp(Metrics.sidebar + self.mouse-x - self.pressed-x, Metrics.sidebar-min, max(Metrics.sidebar-min, root.width - 400px));
+                        }
+                    }
+                    pointer-event(e) => {
+                        if e.kind == PointerEventKind.up {
+                            root.sidebar-resized(Metrics.sidebar);
+                        }
+                    }
+                    double-clicked => {
+                        Metrics.sidebar = 320px;
+                        root.sidebar-resized(Metrics.sidebar);
+                    }
+                }
+            }
+
+            // Main panel: Changes
+            if root.tab == 0 && (root.total-files > 0 || root.has-file): DiffPanel {
+                horizontal-stretch: 1;
+                title: root.diff-title;
+                lines: root.diff;
+                split-lines: root.split-diff;
+                gutter: root.diff-gutter;
+                max-chars: root.diff-chars;
+                blame-available: root.blame-available;
+                blame-mode: root.blame-mode;
+                conflict-path: root.conflict-path;
+                mono-font: root.mono-font;
+                reveal-label: root.reveal-label;
+                has-file: root.has-file;
+                busy: root.busy;
+                empty-text: "Select a file to see its changes";
+                split-view <=> root.split-view;
+                wrap <=> root.wrap;
+                toggle-blame => {
+                    root.blame-mode = !root.blame-mode;
+                    root.toggle-blame();
+                }
+                options-changed => {
+                    root.diff-options-changed();
+                }
+                conflict-action(a) => {
+                    root.conflict-action(a);
+                }
+                file-action(a) => {
+                    root.file-action(a);
+                }
+            }
+
+            if root.tab == 0 && root.total-files == 0 && !root.has-file: Rectangle {
+                horizontal-stretch: 1;
+                VerticalLayout {
+                    alignment: center;
+                    HorizontalLayout {
+                        alignment: center;
+                        VerticalLayout {
+                            width: 560px;
+                            spacing: 12px;
+                            Text {
+                                text: "No local changes";
+                                font-size: 22px;
+                                font-weight: 700;
+                            }
+                            Label {
+                                text: "There are no uncommitted changes in this repository. Here are some friendly suggestions for what to do next.";
+                                wrap: word-wrap;
+                            }
+                            if root.ahead > 0 || root.unpublished: SuggestionCard {
+                                text: root.unpublished ? "Publish " + root.branch : "Land your changesets to " + root.branch;
+                                detail: root.unpublished ? root.branch + " does not exist on the server yet" : root.ahead + " committed changeset(s) are not on " + root.branch + " yet";
+                                action: root.unpublished ? "Publish" : "Land";
+                                clicked => {
+                                    root.land-or-sync();
+                                }
+                            }
+                            SuggestionCard {
+                                text: "Open the repository in your editor";
+                                detail: "Uses the editor from Settings, or the system default";
+                                action: "Open in editor";
+                                clicked => {
+                                    root.open-editor();
+                                }
+                            }
+                            SuggestionCard {
+                                text: "View the files of your repository";
+                                detail: root.repo-info;
+                                action: root.reveal-label;
+                                clicked => {
+                                    root.reveal-repo();
+                                }
+                            }
+                            SuggestionCard {
+                                text: "Open a terminal here";
+                                detail: "Use scn for everything the app does not cover";
+                                action: "Open terminal";
+                                clicked => {
+                                    root.open-terminal();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Main panel: History
+            if root.tab == 1: VerticalLayout {
+                horizontal-stretch: 1;
+                if !root.has-changeset: Rectangle {
+                    vertical-stretch: 1;
+                    Label {
+                        text: root.history.length == 0 ? "No history yet" : "Select a changeset";
+                    }
+                }
+                if root.has-changeset: Rectangle {
+                    height: hdr.preferred-height;
+                    hdr := VerticalLayout {
+                        padding: 14px;
+                        spacing: 6px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: root.cs-summary;
+                                font-size: 16px;
+                                font-weight: 700;
+                                overflow: elide;
+                            }
+                            Button {
+                                text: "Revert changeset";
+                                enabled: root.can-act;
+                                clicked => {
+                                    root.revert-changeset();
+                                }
+                            }
+                        }
+                        if root.cs-body != "": Text {
+                            text: root.cs-body;
+                            wrap: word-wrap;
+                        }
+                        Label {
+                            text: root.cs-meta;
+                            overflow: elide;
+                        }
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        height: 1px;
+                        background: Colors.border;
+                    }
+                }
+                if root.has-changeset: HorizontalLayout {
+                    vertical-stretch: 1;
+                    ListView {
+                        width: 260px;
+                        for f[i] in root.cs-files: Rectangle {
+                            height: 30px;
+                            background: i == root.cs-selected-file ? Palette.selection-background : cfa.has-hover ? Colors.hover : transparent;
+                            cfa := TouchArea {
+                                clicked => {
+                                    root.cs-selected-file = i;
+                                    root.blame-mode = false;
+                                    root.select-cs-file(i);
+                                }
+                            }
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 8px;
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: f.path;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    color: i == root.cs-selected-file ? Palette.selection-foreground : Palette.foreground;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Badge {
+                                        kind: f.kind;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        width: 1px;
+                        background: Colors.border;
+                    }
+                    DiffPanel {
+                        horizontal-stretch: 1;
+                        title: root.diff-title;
+                        lines: root.diff;
+                        split-lines: root.split-diff;
+                        gutter: root.diff-gutter;
+                        max-chars: root.diff-chars;
+                        blame-available: root.blame-available;
+                        blame-mode: root.blame-mode;
+                        mono-font: root.mono-font;
+                        reveal-label: root.reveal-label;
+                        has-file: root.has-file;
+                        busy: root.busy;
+                        split-view <=> root.split-view;
+                        wrap <=> root.wrap;
+                        toggle-blame => {
+                            root.blame-mode = !root.blame-mode;
+                            root.toggle-blame();
+                        }
+                        options-changed => {
+                            root.diff-options-changed();
+                        }
+                        file-action(a) => {
+                            root.file-action(a);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Status bar
+        Rectangle {
+            height: 24px;
+            background: Colors.header-bg;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                Text {
+                    text: root.status-text;
+                    font-size: 11px;
+                    color: root.status-error ? Colors.del-fg : Colors.muted;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            Rectangle {
+                height: 1px;
+                y: 0;
+                background: Colors.border;
+            }
+        }
+    }
+
+    // Flyout: repositories (GitHub Desktop style: full height under the
+    // toolbar, which stays clickable, with the rest of the window shaded).
+    if root.show-repos: Overlay {
+        y: 52px;
+        height: parent.height - 52px;
+        shade: #00000026;
+        dismissed => {
+            root.show-repos = false;
+        }
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: Metrics.sidebar;
+            height: parent.height;
+            background: Palette.background;
+            border-width: 1px;
+            border-color: Colors.border;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: #00000040;
+            TouchArea { }
+            VerticalLayout {
+                padding: 10px;
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 6px;
+                    repo-filter-edit := LineEdit {
+                        placeholder-text: "Filter";
+                        text <=> root.repo-filter;
+                        edited(t) => {
+                            root.repo-filter-changed(t);
+                        }
+                    }
+                    add-btn := Button {
+                        text: "Add ▾";
+                        clicked => {
+                            add-menu.show();
+                        }
+                    }
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for r[i] in root.recent: VerticalLayout {
+                        if r.section != "": Rectangle {
+                            height: 30px;
+                            Text {
+                                x: 6px;
+                                text: r.section;
+                                font-size: 12px;
+                                font-weight: 600;
+                                color: Colors.muted;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Rectangle {
+                            height: 44px;
+                            border-radius: 4px;
+                            background: r.current ? Palette.selection-background : rta.has-hover ? Colors.hover : transparent;
+                            rta := TouchArea {
+                                clicked => {
+                                    root.show-repos = false;
+                                    if (!r.current) {
+                                        root.open-path(r.path);
+                                    }
+                                }
+                                pointer-event(ev) => {
+                                    if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.up) {
+                                        repo-menu.show();
+                                    }
+                                }
+                            }
+                            repo-menu := PopupWindow {
+                                x: rta.mouse-x;
+                                y: rta.mouse-y;
+                                width: 230px;
+                                height: (r.current ? 3 : 4) * 28px + 10px;
+                                Rectangle {
+                                    background: Palette.background;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: Colors.border;
+                                    drop-shadow-blur: 12px;
+                                    drop-shadow-color: #00000040;
+                                    VerticalLayout {
+                                        padding: 5px;
+                                        PopupItem {
+                                            text: "Open in editor";
+                                            clicked => {
+                                                root.repo-action("editor", r.path);
+                                            }
+                                        }
+                                        PopupItem {
+                                            text: root.reveal-label;
+                                            clicked => {
+                                                root.repo-action("reveal", r.path);
+                                            }
+                                        }
+                                        PopupItem {
+                                            text: "Open in terminal";
+                                            clicked => {
+                                                root.repo-action("terminal", r.path);
+                                            }
+                                        }
+                                        if !r.current: PopupItem {
+                                            text: "Remove from list";
+                                            danger: true;
+                                            clicked => {
+                                                root.repo-action("remove", r.path);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Icon {
+                                        source: @image-url("icons/repo.svg");
+                                        tint: r.current ? Palette.selection-foreground : Colors.muted;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 1;
+                                    Text {
+                                        text: r.name;
+                                        font-weight: r.current ? 700 : 400;
+                                        overflow: elide;
+                                        color: r.current ? Palette.selection-foreground : Palette.foreground;
+                                    }
+                                    Text {
+                                        text: r.path;
+                                        font-size: 11px;
+                                        overflow: elide;
+                                        color: r.current ? Palette.selection-foreground : Colors.muted;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if root.recent.length == 0: Text {
+                    text: root.repo-filter == "" ? "No repositories yet. Use Add to clone or open one." : "No repositories match \"" + root.repo-filter + "\"";
+                    color: Colors.muted;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                }
+            }
+            add-menu := PopupWindow {
+                x: parent.width - 240px;
+                y: 46px;
+                width: 230px;
+                height: 2 * 28px + 10px;
+                Rectangle {
+                    background: Palette.background;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: Colors.border;
+                    drop-shadow-blur: 12px;
+                    drop-shadow-color: #00000040;
+                    VerticalLayout {
+                        padding: 5px;
+                        PopupItem {
+                            text: "Clone repository…";
+                            clicked => {
+                                root.show-repos = false;
+                                root.show-clone = true;
+                            }
+                        }
+                        PopupItem {
+                            text: "Add existing working copy…";
+                            clicked => {
+                                root.show-repos = false;
+                                root.open-repo();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Flyout: branches (same style as the repository flyout).
+    if root.show-branches: Overlay {
+        y: 52px;
+        height: parent.height - 52px;
+        shade: #00000026;
+        dismissed => {
+            root.show-branches = false;
+        }
+        Rectangle {
+            x: Metrics.sidebar;
+            y: 0;
+            width: Metrics.segment;
+            height: parent.height;
+            background: Palette.background;
+            border-width: 1px;
+            border-color: Colors.border;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: #00000040;
+            TouchArea { }
+            VerticalLayout {
+                padding: 10px;
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 6px;
+                    LineEdit {
+                        placeholder-text: "Filter";
+                        text <=> root.branch-filter;
+                        edited(t) => {
+                            root.branch-filter-changed(t);
+                        }
+                    }
+                    Button {
+                        text: "New branch";
+                        primary: true;
+                        clicked => {
+                            root.show-branches = false;
+                            root.new-branch();
+                        }
+                    }
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for b[i] in root.branches: VerticalLayout {
+                        if i == 0 || (!b.current && i == 1 && root.branches[0].current): Rectangle {
+                            height: 30px;
+                            Text {
+                                x: 6px;
+                                text: b.current ? "Current branch" : "Other branches";
+                                font-size: 12px;
+                                font-weight: 600;
+                                color: Colors.muted;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Rectangle {
+                            height: 42px;
+                            border-radius: 4px;
+                            background: b.current ? Palette.selection-background : bta.has-hover ? Colors.hover : transparent;
+                            bta := TouchArea {
+                                clicked => {
+                                    if (!b.current) {
+                                        root.show-branches = false;
+                                        root.switch-branch(b.name);
+                                    }
+                                }
+                                pointer-event(ev) => {
+                                    if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.up) {
+                                        branch-menu.show();
+                                    }
+                                }
+                            }
+                            branch-menu := PopupWindow {
+                                x: min(bta.mouse-x, parent.width - 200px);
+                                y: bta.mouse-y;
+                                width: 200px;
+                                height: (b.current ? 1 : 3) * 28px + 10px;
+                                Rectangle {
+                                    background: Palette.background;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: Colors.border;
+                                    drop-shadow-blur: 12px;
+                                    drop-shadow-color: #00000040;
+                                    VerticalLayout {
+                                        padding: 5px;
+                                        if !b.current: PopupItem {
+                                            text: "Merge into " + root.branch;
+                                            clicked => {
+                                                root.show-branches = false;
+                                                root.merge-branch(b.name);
+                                            }
+                                        }
+                                        PopupItem {
+                                            text: "Rename…";
+                                            clicked => {
+                                                root.show-branches = false;
+                                                root.rename-branch(b.name);
+                                            }
+                                        }
+                                        if !b.current: PopupItem {
+                                            text: "Delete…";
+                                            danger: true;
+                                            clicked => {
+                                                root.show-branches = false;
+                                                root.delete-branch(b.name);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 8px;
+                                spacing: 8px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Icon {
+                                        source: @image-url("icons/branch.svg");
+                                        tint: b.current ? Palette.selection-foreground : Colors.muted;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 1;
+                                    Text {
+                                        text: b.name;
+                                        font-weight: b.current ? 700 : 400;
+                                        overflow: elide;
+                                        color: b.current ? Palette.selection-foreground : Palette.foreground;
+                                    }
+                                    Text {
+                                        text: b.short;
+                                        font-size: 11px;
+                                        color: b.current ? Palette.selection-foreground : Colors.muted;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Label {
+                    text: "Right-click a branch to merge, rename or delete it. Committing never moves a branch; Land does.";
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+
+    if root.show-clone: Overlay {
+        Panel {
+            title: "Clone a repository";
+            CheckBox {
+                text: "Use the built-in local server (127.0.0.1:7787)";
+                checked <=> root.clone-local;
+            }
+            Label {
+                text: "Server URL";
+            }
+            LineEdit {
+                text <=> root.clone-url;
+                enabled: !root.clone-local;
+            }
+            Label {
+                text: "Local path (new or empty folder)";
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                LineEdit {
+                    horizontal-stretch: 1;
+                    text <=> root.clone-dest;
+                    placeholder-text: "~/my-repo";
+                }
+                Button {
+                    text: "Choose…";
+                    clicked => {
+                        root.clone-browse();
+                    }
+                }
+            }
+            Label {
+                text: "Branch";
+            }
+            LineEdit {
+                text <=> root.clone-track;
+            }
+            Label {
+                text: "Sparse directories (comma-separated; empty = everything)";
+            }
+            LineEdit {
+                text <=> root.clone-sparse;
+                placeholder-text: "src, docs";
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                Button {
+                    text: "Cancel";
+                    clicked => {
+                        root.show-clone = false;
+                    }
+                }
+                Button {
+                    text: "Clone";
+                    primary: true;
+                    enabled: !root.busy && root.clone-dest != "";
+                    clicked => {
+                        root.show-clone = false;
+                        root.clone-submit();
+                    }
+                }
+            }
+        }
+    }
+
+    if root.show-conflicts: Overlay {
+        Panel {
+            title: "Conflicts";
+            width: 860px;
+            Text {
+                text: "Your changes conflict with changes already on " + root.branch + ". Nothing was landed. Resolve the conflicts in your working copy: files that merged cleanly are kept, and conflicted files get markers you can edit or replace with either version.";
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                height: 380px;
+                spacing: 8px;
+                ListView {
+                    width: 240px;
+                    for c[i] in root.conflicts: Rectangle {
+                        height: 42px;
+                        background: i == root.selected-conflict ? Palette.selection-background : transparent;
+                        cta := TouchArea {
+                            clicked => {
+                                root.selected-conflict = i;
+                                root.select-conflict(i);
+                            }
+                        }
+                        VerticalLayout {
+                            padding-left: 8px;
+                            alignment: center;
+                            Text {
+                                text: c.path == "" ? "(tree)" : c.path;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: c.kind;
+                                font-size: 11px;
+                                color: Colors.del-fg;
+                            }
+                        }
+                    }
+                }
+                DiffView {
+                    horizontal-stretch: 1;
+                    lines: root.conflict-diff;
+                    mono-font: root.mono-font;
+                }
+            }
+            Label {
+                text: "Red: already on " + root.branch + ". Green: your changes.";
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                Button {
+                    text: "Cancel";
+                    clicked => {
+                        root.show-conflicts = false;
+                    }
+                }
+                Button {
+                    text: "Resolve in working copy";
+                    primary: true;
+                    enabled: root.can-resolve && !root.busy;
+                    clicked => {
+                        root.show-conflicts = false;
+                        root.tab = 0;
+                        root.start-resolution();
+                    }
+                }
+            }
+        }
+    }
+
+    if root.show-input: Overlay {
+        Panel {
+            title: root.input-title;
+            width: 420px;
+            Label {
+                text: root.input-label;
+            }
+            inp := LineEdit {
+                text <=> root.input-value;
+                accepted(t) => {
+                    root.show-input = false;
+                    root.input-accepted(t);
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                Button {
+                    text: "Cancel";
+                    clicked => {
+                        root.show-input = false;
+                    }
+                }
+                Button {
+                    text: root.input-button;
+                    primary: true;
+                    enabled: root.input-value != "";
+                    clicked => {
+                        root.show-input = false;
+                        root.input-accepted(root.input-value);
+                    }
+                }
+            }
+        }
+    }
+
+    if root.show-confirm: Overlay {
+        Panel {
+            title: root.confirm-title;
+            width: 440px;
+            Text {
+                text: root.confirm-text;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                Button {
+                    text: "Cancel";
+                    clicked => {
+                        root.show-confirm = false;
+                    }
+                }
+                Button {
+                    text: root.confirm-button;
+                    primary: true;
+                    clicked => {
+                        root.show-confirm = false;
+                        root.confirm-accepted();
+                    }
+                }
+            }
+        }
+    }
+
+    if root.show-settings: Overlay {
+        Panel {
+            title: "Settings";
+            width: 480px;
+            Label {
+                text: "Author for new changesets (empty = your user name)";
+            }
+            LineEdit {
+                text <=> root.set-author;
+                placeholder-text: "Name <email>";
+            }
+            Label {
+                text: "External editor: command or app name (empty = system default)";
+            }
+            LineEdit {
+                text <=> root.set-editor;
+                placeholder-text: "code -r   or   Visual Studio Code";
+            }
+            Label {
+                text: "Terminal app or command (empty = platform default)";
+            }
+            LineEdit {
+                text <=> root.set-terminal;
+                placeholder-text: "Terminal, iTerm, wt, gnome-terminal…";
+            }
+            Label {
+                text: "Land and merge strategy";
+            }
+            ComboBox {
+                model: ["Rebase (linear history)", "Merge changeset"];
+                current-index <=> root.set-strategy;
+            }
+            Label {
+                text: "Theme (System applies on restart)";
+            }
+            ComboBox {
+                model: ["System", "Light", "Dark"];
+                current-index <=> root.set-theme;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Button {
+                    text: "About";
+                    clicked => {
+                        root.show-settings = false;
+                        root.show-about = true;
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                Button {
+                    text: "Cancel";
+                    clicked => {
+                        root.show-settings = false;
+                    }
+                }
+                Button {
+                    text: "Save";
+                    primary: true;
+                    clicked => {
+                        root.show-settings = false;
+                        root.apply-theme(root.set-theme);
+                        root.save-settings();
+                    }
+                }
+            }
+        }
+    }
+
+    if root.show-error: Overlay {
+        Panel {
+            title: "Something went wrong";
+            Text {
+                text: root.error-text;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: end;
+                Button {
+                    text: "OK";
+                    primary: true;
+                    clicked => {
+                        root.show-error = false;
+                    }
+                }
+            }
+        }
+    }
+
+    if root.show-about: Overlay {
+        Panel {
+            title: "About Scion Desktop";
+            Text {
+                text: "Scion Desktop 0.2.0 — a lightweight client for the Scion source control system. Commits, merges and rebases run on the server.";
+                wrap: word-wrap;
+            }
+            AboutSlint {
+                height: 160px;
+            }
+            HorizontalLayout {
+                alignment: end;
+                Button {
+                    text: "Close";
+                    clicked => {
+                        root.show-about = false;
+                    }
+                }
+            }
+        }
+    }
+}

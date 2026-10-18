@@ -1,0 +1,15 @@
+[package]
+name = "scion-proto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+prost.workspace = true
+scion-core.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+
+[build-dependencies]
+protoc-bin-vendored.workspace = true
+tonic-build.workspace = true

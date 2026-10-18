@@ -1,0 +1,16 @@
+[package]
+name = "scion-repo"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+scion-core.workspace = true
+scion-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+similar.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
