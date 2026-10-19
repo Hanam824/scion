@@ -310,12 +310,15 @@ async fn git_import_roundtrip() -> Result<()> {
     let mut ws = clone(&srv.url, &co, &[]).await;
     assert_eq!(read(&co, "a.txt"), "a1\na2\n");
     assert!(!co.join("dir").exists());
-    use std::os::unix::fs::PermissionsExt;
-    assert_ne!(
-        fs::metadata(co.join("run.sh"))?.permissions().mode() & 0o111,
-        0,
-        "executable bit kept"
-    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_ne!(
+            fs::metadata(co.join("run.sh"))?.permissions().mode() & 0o111,
+            0,
+            "executable bit kept"
+        );
+    }
     let log = ws.log(None, None, 10).await?;
     assert_eq!(
         log.iter().map(|c| c.message.as_str()).collect::<Vec<_>>(),

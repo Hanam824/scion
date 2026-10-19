@@ -1,0 +1,39 @@
+name: Rust setup
+description: Install the stable Rust toolchain, the Linux libraries Slint needs, and restore the cached cargo build.
+
+inputs:
+  cache-name:
+    description: Keeps the caches of different workflows apart (their target/ contents differ).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust (stable, with clippy and rustfmt)
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+
+    # Slint's winit/femtovg backends link against fontconfig and xkbcommon; the linuxkms backend
+    # (built by default on Linux) needs libinput, udev and gbm. macOS and Windows need nothing extra.
+    - name: Install Linux libraries for Slint
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          libfontconfig1-dev libxkbcommon-dev libinput-dev libudev-dev libgbm-dev
+
+    - name: Show toolchain
+      shell: bash
+      run: |
+        rustc --version
+        cargo --version
+
+    # Caches ~/.cargo and the compiled dependencies in target/ (tonic, rusqlite's bundled SQLite,
+    # Slint, syntect...), keyed by Cargo.lock and the rustc version. Our own crates are rebuilt each
+    # run. Caches saved on main can be restored by pull requests.
+    - name: Cache cargo build
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.cache-name }}
