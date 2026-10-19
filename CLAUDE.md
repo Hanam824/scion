@@ -30,6 +30,13 @@ cargo run -p scion-desktop                            # GUI (Slint); --release b
 
 `protoc` is vendored (`protoc-bin-vendored` in `crates/scion-proto/build.rs`), so no system install is needed. Editing `proto/scion.proto` regenerates the bindings on the next build.
 
+## CI and releases
+
+- `.github/workflows/ci.yml` runs on pull requests to `main`. fmt and clippy run once on Linux; build and test run on macOS arm64/Intel, Linux and Windows. `CI result` is the single check to require on `main`. Docs-only PRs skip the build; `scripts/code-changes.sh` defines what counts as docs.
+- `.github/workflows/nightly-release.yml` runs at 17:00 UTC when a PR was merged in the last 24 h (or on a forced manual run). `scripts/next-version.sh` bumps the patch of the last `vX.Y.Z` tag. `scripts/package-release.sh <tag> [platform]` builds and archives the four binaries into `dist/`.
+- `.github/actions/rust-setup` installs the toolchain, the Linux libraries Slint needs, and the cargo cache.
+- Commits and branches follow Conventional Commits; see `.claude/skills/create-commit-message` and `create-commit-branch`. Never add `Co-Authored-By` or AI attribution.
+
 ## Architecture
 
 The dependency chain is `scion-core` → `scion-store` → `scion-repo` → `scion-server`. `scion-proto` is shared by the server, `scn` and `scion-import`.
