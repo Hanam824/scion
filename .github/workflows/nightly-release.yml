@@ -1,0 +1,159 @@
+name: Nightly release
+
+on:
+  schedule:
+    - cron: "0 17 * * *" # 17:00 UTC = 00:00 in Vietnam (UTC+7)
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Release even if no pull request was merged in the last 24 hours
+        type: boolean
+        default: false
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Was a pull request merged today?
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      release: ${{ steps.merged.outputs.release }}
+    steps:
+      - name: Count pull requests merged into main in the last 24 hours
+        id: merged
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+          count="$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --state merged \
+            --search "merged:>=$since" --json number --jq length)"
+          echo "Pull requests merged into main since $since: $count"
+          if [ "$count" -gt 0 ] || [ "$FORCE" = "true" ]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Worked out once, so every platform build uses the same tag and the same commit.
+  version:
+    name: Work out the next version
+    needs: check
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0 # full history and tags for next-version.sh
+
+      - name: Next version
+        id: version
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if tag="$(./scripts/next-version.sh)"; then
+            echo "Next version: $tag"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          else
+            # next-version.sh printed why: no commits, or only doc changes, since the last release.
+            echo "Nothing to publish."
+            echo "tag=" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: version
+    if: needs.version.outputs.tag != ''
+    # Each platform is built and tested natively.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            platform: macos-arm64
+          - runner: macos-15-intel # GitHub's Intel macOS runner
+            platform: macos-x86_64
+          - runner: ubuntu-latest
+            platform: linux-x86_64
+          - runner: windows-latest
+            platform: windows-x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      # Same cache name as CI: this job runs on main, and pull requests can restore caches saved on
+      # main, so new pull requests start with the dependencies already compiled.
+      - name: Set up Rust and the build cache
+        uses: ./.github/actions/rust-setup
+        with:
+          cache-name: ci
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build and archive the release
+        shell: bash
+        run: ./scripts/package-release.sh "${{ needs.version.outputs.tag }}" "${{ matrix.platform }}"
+
+      - name: Upload the archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: Scion-${{ matrix.platform }}
+          path: dist/Scion-${{ needs.version.outputs.tag }}-${{ matrix.platform }}.*
+          if-no-files-found: error
+
+  # Runs only when every build passed, so a release always has all archives.
+  publish:
+    name: Publish the GitHub release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag and the release
+    steps:
+      - name: Download the archives
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          SHA: ${{ needs.version.outputs.sha }}
+        run: |
+          ls -l dist
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SHA" \
+            --title "Scion $TAG" \
+            --generate-notes \
+            --notes "Each archive holds \`scion-desktop\` (the app), \`scn\` (the CLI), \`scion-server\` and \`scion-import\`. Download the one for your system:
+          - macOS, Apple Silicon (M1 and newer): \`Scion-$TAG-macos-arm64.zip\`
+          - macOS, Intel: \`Scion-$TAG-macos-x86_64.zip\`
+          - Linux x86_64: \`Scion-$TAG-linux-x86_64.tar.gz\`
+          - Windows x86_64: \`Scion-$TAG-windows-x86_64.zip\`
+
+          Unpack, then run \`./scion-desktop\` (the clone dialog can start a built-in local server), or see the README for the CLI.
+          The builds aren't signed or notarized: if macOS blocks them, run \`xattr -dr com.apple.quarantine <unzipped folder>\` once."

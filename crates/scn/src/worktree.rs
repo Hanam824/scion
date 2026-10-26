@@ -4,10 +4,7 @@ use crate::state::{FileState, State, DIR};
 use anyhow::{bail, Context, Result};
 use scion_core::{join, FileMode, ObjectId, PathFilter};
 use std::collections::{BTreeMap, HashSet};
-use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -27,7 +24,7 @@ pub fn read_meta(abs: &Path) -> std::io::Result<Option<Disk>> {
     let mode = if m.file_type().is_symlink() {
         FileMode::Symlink
     } else if m.is_file() {
-        if m.permissions().mode() & 0o111 != 0 {
+        if platform::is_executable(&m) {
             FileMode::Executable
         } else {
             FileMode::Regular
@@ -49,7 +46,10 @@ pub fn read_meta(abs: &Path) -> std::io::Result<Option<Disk>> {
 
 pub fn read_content(abs: &Path, mode: FileMode) -> Result<Vec<u8>> {
     Ok(match mode {
-        FileMode::Symlink => fs::read_link(abs)?.as_os_str().as_bytes().to_vec(),
+        FileMode::Symlink if fs::symlink_metadata(abs)?.file_type().is_symlink() => {
+            platform::link_target_bytes(&fs::read_link(abs)?)?
+        }
+        // Includes a symlink checked out as a plain file (see `platform`).
         _ => fs::read(abs).with_context(|| format!("reading {}", abs.display()))?,
     })
 }
@@ -73,15 +73,10 @@ pub fn write_file(
         Err(_) => {}
     }
     if mode == FileMode::Symlink {
-        std::os::unix::fs::symlink(OsStr::from_bytes(data), &abs)?;
+        platform::symlink(data, &abs)?;
     } else {
         fs::write(&abs, data)?;
-        let perm = if mode == FileMode::Executable {
-            0o755
-        } else {
-            0o644
-        };
-        fs::set_permissions(&abs, fs::Permissions::from_mode(perm))?;
+        platform::set_executable(&abs, mode == FileMode::Executable)?;
     }
     let d = read_meta(&abs)?.with_context(|| format!("{path} vanished after write"))?;
     Ok(FileState {
@@ -201,8 +196,9 @@ pub fn scan(root: &Path, state: &State) -> Result<Vec<LocalChange>> {
             });
         }
     }
-    for (path, d) in disk {
+    for (path, mut d) in disk {
         let prev = state.files.get(&path);
+        d.mode = platform::effective_mode(d.mode, prev.map(|p| p.mode));
         if let Some(p) = prev {
             if p.size == d.size && p.mtime_ns == d.mtime_ns && p.mode == d.mode {
                 continue;
@@ -228,4 +224,76 @@ pub fn scan(root: &Path, state: &State) -> Result<Vec<LocalChange>> {
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
+}
+
+/// Platform differences. Unix stores the executable bit and symlinks as is.
+/// Windows has neither, so, like git with `core.filemode=false` and
+/// `core.symlinks=false`, a file keeps its tracked mode and a symlink is
+/// checked out as a plain file holding the link target.
+#[cfg(unix)]
+mod platform {
+    use anyhow::Result;
+    use scion_core::FileMode;
+    use std::ffi::OsStr;
+    use std::fs;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    pub fn is_executable(m: &fs::Metadata) -> bool {
+        m.permissions().mode() & 0o111 != 0
+    }
+
+    pub fn set_executable(abs: &Path, exec: bool) -> Result<()> {
+        let perm = if exec { 0o755 } else { 0o644 };
+        fs::set_permissions(abs, fs::Permissions::from_mode(perm))?;
+        Ok(())
+    }
+
+    pub fn symlink(target: &[u8], abs: &Path) -> Result<()> {
+        std::os::unix::fs::symlink(OsStr::from_bytes(target), abs)?;
+        Ok(())
+    }
+
+    pub fn link_target_bytes(target: &Path) -> Result<Vec<u8>> {
+        Ok(target.as_os_str().as_bytes().to_vec())
+    }
+
+    pub fn effective_mode(disk: FileMode, _tracked: Option<FileMode>) -> FileMode {
+        disk
+    }
+}
+
+#[cfg(not(unix))]
+mod platform {
+    use anyhow::{Context, Result};
+    use scion_core::FileMode;
+    use std::fs;
+    use std::path::Path;
+
+    pub fn is_executable(_m: &fs::Metadata) -> bool {
+        false
+    }
+
+    pub fn set_executable(_abs: &Path, _exec: bool) -> Result<()> {
+        Ok(())
+    }
+
+    pub fn symlink(target: &[u8], abs: &Path) -> Result<()> {
+        fs::write(abs, target)?;
+        Ok(())
+    }
+
+    pub fn link_target_bytes(target: &Path) -> Result<Vec<u8>> {
+        let s = target.to_str().context("symlink target is not UTF-8")?;
+        Ok(s.replace('\\', "/").into_bytes())
+    }
+
+    /// A plain file on disk keeps the tracked executable or symlink mode.
+    pub fn effective_mode(disk: FileMode, tracked: Option<FileMode>) -> FileMode {
+        match (disk, tracked) {
+            (FileMode::Regular, Some(t)) => t,
+            _ => disk,
+        }
+    }
 }

@@ -1,0 +1,139 @@
+name: CI
+
+# Pull requests only: merging a pull request doesn't build again, since CI already passed on it.
+# (The nightly release builds main and keeps the cache warm for new pull requests.)
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A new push to the same pull request cancels the run that is still going.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Doc-only changes don't need a build, but the workflow still runs: `CI result` is meant to be the
+# required check on main, and a check that never reports would block the merge forever. Instead,
+# `changes` looks at the changed files (scripts/code-changes.sh decides what counts as docs) and
+# `build` is skipped when only docs changed. `CI result` then passes, because a job skipped by `if:`
+# doesn't count as a failure.
+jobs:
+  changes:
+    name: Code changed?
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # history to diff against
+
+      - name: Look for non-doc changes
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # A manual run always builds.
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          # Three dots: the changes on the PR branch since it split from main.
+          elif files="$(./scripts/code-changes.sh "$PR_BASE...HEAD")" && [ -z "$files" ]; then
+            echo "Only docs changed: skipping the build."
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            printf 'Changed files that need a build:\n%s\n' "$files"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Formatting and lints are the same on every platform, so they run once.
+  lint:
+    name: Format and clippy
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Rust and the build cache
+        uses: ./.github/actions/rust-setup
+        with:
+          cache-name: lint
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  build:
+    name: Build and test (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    # The desktop app is cross-platform, so every OS it ships on builds and tests in parallel.
+    # fail-fast off: one failing doesn't cancel the others.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            name: macos-arm64
+          - runner: macos-15-intel # GitHub's Intel macOS runner
+            name: macos-x86_64
+          - runner: ubuntu-latest
+            name: linux-x86_64
+          - runner: windows-latest
+            name: windows-x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Rust and the build cache
+        uses: ./.github/actions/rust-setup
+        with:
+          cache-name: ci
+
+      - name: Build (debug)
+        run: cargo build --workspace --all-targets
+
+      # The desktop tests drive the worker headless, so no display is needed.
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build (release)
+        run: cargo build --release --workspace
+
+  # The one check to require on main. It always runs, and passes when the builds passed or were
+  # skipped (docs-only change). Matrix job names can't be required reliably: a skipped matrix job
+  # reports under its unexpanded name.
+  result:
+    name: CI result
+    needs: [changes, lint, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the build jobs
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          LINT: ${{ needs.lint.result }}
+          BUILD: ${{ needs.build.result }}
+        run: |
+          echo "changes: $CHANGES, lint: $LINT, build: $BUILD"
+          if [ "$CHANGES" != "success" ]; then exit 1; fi
+          for r in "$LINT" "$BUILD"; do
+            case "$r" in
+              success | skipped) ;;
+              *) exit 1 ;;
+            esac
+          done
